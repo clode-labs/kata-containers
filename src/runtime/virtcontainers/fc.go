@@ -463,14 +463,19 @@ func (fc *firecracker) client(ctx context.Context) *client.FirecrackerAPI {
 }
 
 func (fc *firecracker) createJailedDrive(name string) (string, error) {
-	// Don't bind mount the resource, just create a raw file
-	// that can be bind-mounted later
+	// Create a symlink to /dev/null as a placeholder for the drive.
+	// This avoids the race condition where the guest kernel probes the
+	// drive before the real rootfs is patched in. With an empty file,
+	// reads return EIO; with /dev/null, reads return EOF (harmless).
+	// The symlink is atomically replaced with the real path later
+	// via fcUpdateBlockDrive -> fcJailResource.
+	// See: E2B infra's symlink approach in fc/process.go
 	r := filepath.Join(fc.jailerRoot, name)
-	f, err := os.Create(r)
-	if err != nil {
-		return "", err
+	// Remove any existing file/symlink first
+	os.Remove(r)
+	if err := os.Symlink("/dev/null", r); err != nil {
+		return "", fmt.Errorf("failed to create placeholder symlink %s: %v", r, err)
 	}
-	f.Close()
 
 	if fc.jailed {
 		// use path relative to the jail
@@ -1020,10 +1025,34 @@ func (fc *firecracker) fcAddBlockDrive(ctx context.Context, drive config.BlockDr
 	return nil
 }
 
-// Firecracker supports replacing the host drive used once the VM has booted up
+// Firecracker supports replacing the host drive used once the VM has booted up.
+// We use atomic symlink replacement so the guest sees either /dev/null (placeholder)
+// or the real rootfs — never an empty file that causes EIO.
 func (fc *firecracker) fcUpdateBlockDrive(ctx context.Context, path, id string) error {
 	span, _ := katatrace.Trace(ctx, fc.Logger(), "fcUpdateBlockDrive", fcTracingTags, map[string]string{"sandbox_id": fc.id})
 	defer span.End()
+
+	// Atomically replace the placeholder symlink with one pointing to the real path.
+	// This ensures the guest never reads an empty file — it either gets /dev/null
+	// (EOF, harmless) or the real rootfs.
+	var jailedPath string
+	if fc.jailed {
+		jailedPath = filepath.Join(fc.jailerRoot, id)
+	} else {
+		jailedPath = filepath.Join(fc.jailerRoot, id)
+	}
+
+	// Atomic symlink swap: create temp symlink, rename over existing
+	tmpLink := jailedPath + ".tmp"
+	os.Remove(tmpLink)
+	if err := os.Symlink(path, tmpLink); err != nil {
+		fc.Logger().WithError(err).WithField("path", path).Warn("symlink creation failed, falling back to direct patch")
+	} else {
+		if err := os.Rename(tmpLink, jailedPath); err != nil {
+			fc.Logger().WithError(err).Warn("atomic symlink rename failed, falling back to direct patch")
+			os.Remove(tmpLink)
+		}
+	}
 
 	// Use the global block index as an index into the pool of the devices
 	// created for firecracker.

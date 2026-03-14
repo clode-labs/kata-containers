@@ -104,21 +104,68 @@ pub fn baremount(
         flags
     );
 
-    nix::mount::mount(
-        Some(source),
-        destination,
-        Some(fs_type),
-        flags,
-        Some(options),
-    )
-    .map_err(|e| {
-        anyhow!(
-            "failed to mount {} to {}, with error: {}",
-            source.display(),
-            destination.display(),
-            e
-        )
-    })
+    // Retry mount up to 100 times with 10ms delay (1s total) to handle
+    // transient EIO/EINVAL from Firecracker drive placeholder race condition.
+    // The host patches the real rootfs into the drive slot after VM boot;
+    // the guest kernel may probe the device before the patch completes.
+    // See: firecracker-containerd agent/drive_handler.go for the same pattern.
+    const MAX_RETRIES: u32 = 100;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
+
+    let mut last_err = None;
+    for attempt in 0..MAX_RETRIES {
+        match nix::mount::mount(
+            Some(source),
+            destination,
+            Some(fs_type),
+            flags,
+            Some(options),
+        ) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                // Only retry on transient errors (EIO, EINVAL, ENOMEM, ENXIO)
+                // Fail fast on permanent errors (ENOENT, EPERM, EACCES, etc.)
+                match e {
+                    nix::errno::Errno::EIO
+                    | nix::errno::Errno::EINVAL
+                    | nix::errno::Errno::ENOMEM
+                    | nix::errno::Errno::ENXIO => {
+                        if attempt < MAX_RETRIES - 1 {
+                            warn!(
+                                logger,
+                                "mount {} to {} failed (attempt {}/{}): {}, retrying...",
+                                source.display(),
+                                destination.display(),
+                                attempt + 1,
+                                MAX_RETRIES,
+                                e
+                            );
+                            std::thread::sleep(RETRY_DELAY);
+                            last_err = Some(e);
+                            continue;
+                        }
+                        last_err = Some(e);
+                    }
+                    _ => {
+                        return Err(anyhow!(
+                            "failed to mount {} to {}, with error: {}",
+                            source.display(),
+                            destination.display(),
+                            e
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    Err(anyhow!(
+        "failed to mount {} to {} after {} retries, last error: {}",
+        source.display(),
+        destination.display(),
+        MAX_RETRIES,
+        last_err.map(|e| e.to_string()).unwrap_or_else(|| "unknown".to_string())
+    ))
 }
 
 /// Looks for `mount_point` entry in the /proc/mounts.
