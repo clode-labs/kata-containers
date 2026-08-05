@@ -83,7 +83,12 @@ assets:
       uscan-url: >-
         https://github.com/firecracker-microvm/firecracker/tags
         .*/v?(\d\S+)\.tar\.gz
-      version: "v1.12.1"
+      # clode: bumped from upstream's v1.12.1. Reviewed 1.13-1.16 breaking
+      # changes against our config: jailer rework is N/A (we run with
+      # jailer_path = ""), MMDS changes unused, removed metrics were never
+      # incremented. Note 1.15 reduces the x86 virtio device cap to 17 (GSI
+      # used by VMClock) and 1.13 drops Skylake from upstream test coverage.
+      version: "v1.16.1"
 
     qemu:
       description: "VMM that uses KVM"
