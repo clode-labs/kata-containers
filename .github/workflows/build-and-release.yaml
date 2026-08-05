@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
     branches:
+      # Fork work lands on feat/clode-* branches. A branch push runs the full
+      # build but creates no release — the release step below is gated on a
+      # tag push (or an explicit dispatch) — so this is the dry run to use
+      # before cutting a tag.
       - 'feat/**'
   workflow_dispatch:
     inputs:
@@ -164,7 +168,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(cat VERSION)
-          TAG_NAME="${GITHUB_REF_NAME:-v${VERSION}-$(git rev-parse --short HEAD)}"
+          # GITHUB_REF_NAME is always set, so a "${GITHUB_REF_NAME:-...}"
+          # default never fires: dispatching from a branch would name the
+          # release after the branch. Branch on the ref type instead.
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG_NAME="${GITHUB_REF_NAME}"
+          else
+            TAG_NAME="v${VERSION}-$(git rev-parse --short HEAD)"
+          fi
           echo "tag=${TAG_NAME}" >> "$GITHUB_OUTPUT"
 
           # Create release
