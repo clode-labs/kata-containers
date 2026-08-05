@@ -75,8 +75,8 @@ jobs:
 
       - name: Build rootfs-image
         run: |
-          ./tests/gha-adjust-to-use-prebuilt-components.sh kata-artifacts rootfs-image
-          make rootfs-image-tarball
+          make install-prebuilt-artifacts
+          make DEPS= rootfs-image-tarball
           build_dir=$(readlink -f build)
           mkdir -p kata-build && cp "${build_dir}"/kata-static-rootfs-image*.tar.* kata-build/.
         env:
@@ -111,8 +111,8 @@ jobs:
 
       - name: Build shim-v2
         run: |
-          ./tests/gha-adjust-to-use-prebuilt-components.sh kata-artifacts shim-v2
-          make shim-v2-tarball
+          make install-prebuilt-artifacts
+          make DEPS= shim-v2-tarball
           build_dir=$(readlink -f build)
           mkdir -p kata-build && cp "${build_dir}"/kata-static-shim-v2*.tar.* kata-build/.
         env:
