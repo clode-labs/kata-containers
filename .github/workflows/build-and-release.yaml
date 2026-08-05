@@ -109,21 +109,26 @@ jobs:
           path: kata-artifacts
           merge-multiple: true
 
-      - name: Build shim-v2
+      # 3.32.0 split shim-v2-tarball into shim-v2-go-tarball and
+      # shim-v2-rust-tarball. Build the Go one: it is the runtime that drives
+      # Firecracker (io.containerd.kata-fc.v2), and it is also where
+      # kata-monitor comes from. shim-v2-rust is runtime-rs, which does not
+      # carry the FC path we depend on.
+      - name: Build shim-v2-go
         run: |
           make install-prebuilt-artifacts
-          make DEPS= shim-v2-tarball
+          make DEPS= shim-v2-go-tarball
           build_dir=$(readlink -f build)
-          mkdir -p kata-build && cp "${build_dir}"/kata-static-shim-v2*.tar.* kata-build/.
+          mkdir -p kata-build && cp "${build_dir}"/kata-static-shim-v2-go*.tar.* kata-build/.
         env:
-          KATA_ASSET: shim-v2
+          KATA_ASSET: shim-v2-go
           MEASURED_ROOTFS: yes
 
-      - name: Upload shim-v2 artifact
+      - name: Upload shim-v2-go artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: kata-artifacts-amd64-shim-v2
-          path: kata-build/kata-static-shim-v2.tar.zst
+          name: kata-artifacts-amd64-shim-v2-go
+          path: kata-build/kata-static-shim-v2-go.tar.zst
           retention-days: 7
           if-no-files-found: error
 
