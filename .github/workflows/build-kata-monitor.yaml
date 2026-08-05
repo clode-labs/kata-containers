@@ -1,24 +1,41 @@
 name: Build kata-monitor Container Image
 
+# Builds the kata-monitor image from a published kata-static release tarball.
+#
+# Upstream reworked tools/packaging/kata-monitor/Dockerfile (3.28+) so it no
+# longer compiles Go: it consumes the prebuilt binary at opt/kata/bin/kata-monitor
+# from an extracted kata-static tarball and assembles a distroless image around
+# it. Building with the repo root as context no longer works, so the old
+# push-on-tag trigger is gone — the tarball has to exist first.
+#
+# Sourcing the binary from the tarball also guarantees the monitor is the exact
+# build that ships in the runtime: same commit, same toolchain.
+#
+# Tag builds are driven by build-and-release.yaml once the tarball is built.
+# Use workflow_dispatch to rebuild the image for an already-published release.
+
 on:
-  push:
-    tags:
-      - 'v*'
-    branches:
-      - 'feat/**'
-      - 'clode-dev'
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to build from (e.g. v3.32.0-clode.1)'
+        required: true
+        type: string
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   build-and-push:
     name: Build and push kata-monitor
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -30,25 +47,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Determine image tag
-        id: tag
+      - name: Download kata-static tarball from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            VERSION=$(cat VERSION)
-            SHORT_SHA=$(git rev-parse --short HEAD)
-            echo "tag=v${VERSION}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
-          fi
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern 'kata-static.tar.zst' \
+            --dir .
+          test -f kata-static.tar.zst
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: tools/packaging/kata-monitor/Dockerfile
-          push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/kata-monitor:${{ steps.tag.outputs.tag }}
-            ghcr.io/${{ github.repository_owner }}/kata-monitor:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Build and push image
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          ./tools/packaging/kata-monitor/build-and-upload-from-tarball.sh \
+            "ghcr.io/${OWNER}/kata-monitor:${RELEASE_TAG}" \
+            kata-static.tar.zst \
+            true
