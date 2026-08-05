@@ -14,6 +14,17 @@ COPY install_oras.sh /usr/bin/install_oras.sh
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# clode: apt on GitHub runners intermittently fails to reach the Ubuntu
+# mirrors. Every asset build starts by building this image, so a single
+# failed fetch takes out a whole build stage — we hit it three times across
+# four runs, on build-firecracker and build-rootfs-image alike. It surfaces
+# as a bare "exit code: 100" with no apt output, because
+# kata-deploy-binaries-in-docker.sh invokes `docker build -q`.
+#
+# apt does not retry by default. Give it retries and a longer timeout.
+RUN printf 'Acquire::Retries "5";\nAcquire::Retries::Delay::Maximum "30";\nAcquire::http::Timeout "60";\nAcquire::https::Timeout "60";\n' \
+    > /etc/apt/apt.conf.d/99clode-retries
+
 # Install yq, oras, and docker
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -48,17 +59,30 @@ RUN if [ "${ARCH}" != "$(uname -m)" ] && [ "${ARCH}" == "s390x" ]; then sed -i '
     echo "deb [arch=s390x] http://ports.ubuntu.com/ jammy-updates main multiverse universe" >> /etc/apt/sources.list; fi
 
 #FIXME: gcc is required as agent is build out of a container build.
-RUN apt-get update && \
-    apt-get install --no-install-recommends -y \
-    build-essential \
-    cpio \
-    gcc \
-    unzip \
-    git \
-    make \
-    wget \
-    xz-utils \
-    zstd && \
+# clode: retry update+install as a unit. archive.ubuntu.com is load balanced,
+# and its backends drift out of sync during an archive rotation: the index one
+# host serves can reference a .deb another host has already dropped, giving a
+# hard 404 mid-install. Acquire::Retries does not help — a 404 is not transient
+# from apt's point of view. Re-running apt-get update re-resolves the index,
+# usually against a backend that agrees with the pool.
+RUN apt_ok=0; \
+    for attempt in 1 2 3 4 5; do \
+      if apt-get update && \
+         apt-get install --no-install-recommends -y \
+         build-essential \
+         cpio \
+         gcc \
+         unzip \
+         git \
+         make \
+         wget \
+         xz-utils \
+         zstd; then apt_ok=1; break; fi; \
+      echo "clode: apt attempt ${attempt}/5 failed, retrying in 20s" >&2; \
+      rm -rf /var/lib/apt/lists/*; \
+      sleep 20; \
+    done; \
+    [ "${apt_ok}" = 1 ] || { echo "clode: apt failed after 5 attempts" >&2; exit 1; }; \
     if [ "${ARCH}" != "$(uname -m)" ] && [ "${ARCH}" == "s390x" ]; then \
         apt-get install -y --no-install-recommends \
         gcc-s390x-linux-gnu \
